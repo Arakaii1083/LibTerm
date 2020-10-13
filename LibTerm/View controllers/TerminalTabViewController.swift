@@ -17,9 +17,15 @@ class TerminalTabViewController: TabViewController {
     private var newTerminal: LTTerminalViewController {
         return LTTerminalViewController.makeTerminal()
     }
-
-    /// Saved tabs.
-    static let tabs = ObjectUserDefaults.standard.item(forKey: "tabs")
+    
+    /// The index of the selected View controller.
+    var selectedIndex: Int? {
+        
+        guard let visible = visibleViewController else {
+            return nil
+        }
+        return viewControllers.firstIndex(of: visible)
+    }
     
     /// Open a new terminal.
     @objc func addTab() {
@@ -45,7 +51,6 @@ class TerminalTabViewController: TabViewController {
             return
         }
         let navVC = UINavigationController(rootViewController: vc)
-        navVC.navigationBar.barStyle = .black
         navVC.modalPresentationStyle = .formSheet
         present(navVC, animated: true, completion: nil)
     }
@@ -62,24 +67,51 @@ class TerminalTabViewController: TabViewController {
     }
     
     private func setupBarItems() {
-        navigationItem.leftBarButtonItem = UIBarButtonItem(image: UIImage(named: "Settings"), style: .plain, target: self, action: #selector(showSettings(_:)))
-        navigationItem.rightBarButtonItems = [UIBarButtonItem(image: #imageLiteral(resourceName: "Organize"), style: .plain, target: self, action: #selector(cd(_:))), UIBarButtonItem(image: #imageLiteral(resourceName: "Add"), style: .plain, target: self, action: #selector(addTab))]
+        
+        let settingsImage: UIImage?
+        if #available(iOS 13.0, *) {
+            settingsImage = UIImage(systemName: "gear")
+        } else {
+            settingsImage = UIImage(named: "Settings")
+        }
+        
+        let organizeImage: UIImage?
+        if #available(iOS 13.0, *) {
+            organizeImage = UIImage(systemName: "folder")
+        } else {
+            organizeImage = #imageLiteral(resourceName: "Organize")
+        }
+        
+        let addImage: UIImage?
+        if #available(iOS 13.0, *) {
+            addImage = UIImage(systemName: "plus")
+        } else {
+            addImage = #imageLiteral(resourceName: "Add")
+        }
+        
+        navigationItem.leftBarButtonItem = UIBarButtonItem(image: settingsImage, style: .plain, target: self, action: #selector(showSettings(_:)))
+        navigationItem.rightBarButtonItems = [UIBarButtonItem(image: organizeImage, style: .plain, target: self, action: #selector(cd(_:))), UIBarButtonItem(image: addImage, style: .plain, target: self, action: #selector(addTab))]
     }
     
     /// Saves tabs on the disk.
-    func saveTabs() {
+    var tabBookmarks: [Data] {
         var bookmarks = [Data]()
         for vc in viewControllers {
             if let term = vc as? LTTerminalViewController, let bookmarkData = term.bookmarkData {
                 bookmarks.append(bookmarkData)
             }
         }
-        TerminalTabViewController.tabs.arrayValue = bookmarks
+        return bookmarks
     }
     
     /// Interrupts the currently running command.
     @objc func interrupt() {
         (visibleViewController as? LTTerminalViewController)?.shell.killCommand()
+    }
+    
+    /// Sends `EOF` to `stdin`.
+    @objc func sendEOF() {
+        (visibleViewController as? LTTerminalViewController)?.shell.sendEOF()
     }
     
     // MARK: - Tab view controller
@@ -92,7 +124,8 @@ class TerminalTabViewController: TabViewController {
         
         if let shell = (visibleViewController as? LTTerminalViewController)?.shell, shell.isCommandRunning && !shell.isBuiltinRunning {
             
-            commands.append(UIKeyCommand(input: "C", modifierFlags: .control, action: #selector(interrupt), discoverabilityTitle: "Interrupt"))            
+            commands.append(UIKeyCommand(input: "C", modifierFlags: .control, action: #selector(interrupt), discoverabilityTitle: "Interrupt"))
+            commands.append(UIKeyCommand(input: "D", modifierFlags: .control, action: #selector(sendEOF), discoverabilityTitle: "Send End of File"))
         }
         
         return commands
@@ -104,30 +137,6 @@ class TerminalTabViewController: TabViewController {
         view.tintColor = LTTerminalViewController.Preferences().foregroundColor
         
         setupBarItems()
-        
-        if let bookmarks = TerminalTabViewController.tabs.arrayValue as? [Data], !bookmarks.isEmpty {
-            var terminals = [LTTerminalViewController]()
-            
-            for bookmark in bookmarks {
-                var isStale = false
-                guard let url = try? URL(resolvingBookmarkData: bookmark, bookmarkDataIsStale: &isStale) else {
-                    viewControllers = [newTerminal]
-                    return
-                }
-                
-                _ = url.startAccessingSecurityScopedResource()
-                
-                let term = newTerminal
-                term.loadViewIfNeeded()
-                term.url = url
-                term.title = url.lastPathComponent
-                terminals.append(term)
-            }
-            
-            viewControllers = terminals
-        } else {
-            viewControllers = [newTerminal]
-        }
     }
     
     required init?(coder aDecoder: NSCoder) {
@@ -144,14 +153,6 @@ class TerminalTabViewController: TabViewController {
         }
         
         super.closeTab(tab)
-        
-        saveTabs()
-    }
-    
-    override func activateTab(_ tab: UIViewController) {
-        super.activateTab(tab)
-        
-        saveTabs()
     }
 }
 

@@ -72,7 +72,7 @@ func libshellMain(argc: Int, argv: [String], io: LTIO) -> Int32 {
         return libshellMain(argc: 1, argv: ["-h"], io: io)
         #else
         DispatchQueue.main.async {
-            (UIApplication.shared.keyWindow?.rootViewController as? TerminalTabViewController)?.addTab()
+            (io.terminal?.parent as? TerminalTabViewController)?.addTab()
         }
         return 0
         #endif
@@ -90,7 +90,10 @@ func libshellMain(argc: Int, argv: [String], io: LTIO) -> Int32 {
         
         for instruction_ in script.components(separatedBy: .newlines) {
             for instruction in instruction_.components(separatedBy: ";") {
-                let components = instruction.components(separatedBy: .whitespaces)
+                var components = instruction.components(separatedBy: .whitespaces)
+                while components.first?.isEmpty == true {
+                    components.remove(at: 0)
+                }
                 if components.count > 0, components[0] == "exit" { // Exit
                     if components.count > 1 {
                         exit()
@@ -100,7 +103,7 @@ func libshellMain(argc: Int, argv: [String], io: LTIO) -> Int32 {
                         return 0
                     }
                 }
-                shell.run(command: instruction)
+                shell.run(command: instruction, appendToHistory: false)
             }
         }
     } catch {
@@ -114,59 +117,81 @@ func libshellMain(argc: Int, argv: [String], io: LTIO) -> Int32 {
 
 fileprivate func parseArgs(_ args: inout [String]) {
     
-    var parsedArgs = [String]()
-    
-    var currentArg = ""
-    
-    for arg in args {
+    func parse(quote: String) {
+        var parsedArgs = [String]()
         
-        if arg.hasPrefix("'") {
+        var currentArg = ""
+        
+        for arg in args {
             
-            if currentArg.isEmpty {
-                
-                currentArg = arg
-                currentArg.removeFirst()
-                
-            } else {
-                
-                currentArg.append(" " + arg)
-                
+            if arg.hasPrefix(quote) && arg.hasSuffix(quote) && !arg.contains(" ") {
+                var argument = arg
+                if argument.count > 1 {
+                    argument.removeFirst()
+                }
+                if argument.count > 1 {
+                    argument.removeLast()
+                }
+                parsedArgs.append(argument.replacingOccurrences(of: ";", with: "%SEMICOLON%"))
+                continue
             }
             
-        } else if arg.hasSuffix("'") {
+            if arg.isEmpty {
+                continue
+            }
             
-            if currentArg.isEmpty {
+            if arg.hasPrefix(quote) {
                 
-                currentArg.append(arg)
+                if currentArg.isEmpty {
+                    
+                    currentArg = arg
+                    currentArg.removeFirst()
+                    
+                } else {
+                    
+                    currentArg.append(" " + arg)
+                    
+                }
+                
+            } else if arg.hasSuffix(quote) {
+                
+                if currentArg.isEmpty {
+                    
+                    currentArg.append(arg)
+                    
+                } else {
+                    
+                    currentArg = currentArg.replacingOccurrences(of: ";", with: "%SEMICOLON%")
+                    currentArg.append(" " + arg)
+                    currentArg.removeLast()
+                    parsedArgs.append(currentArg)
+                    currentArg = ""
+                    
+                }
                 
             } else {
                 
-                currentArg.append(" " + arg)
+                if currentArg.isEmpty {
+                    parsedArgs.append(arg)
+                } else {
+                    currentArg.append(" " + arg)
+                }
+                
+            }
+        }
+        
+        if !currentArg.isEmpty {
+            if currentArg.hasSuffix(quote) {
                 currentArg.removeLast()
-                parsedArgs.append(currentArg)
-                currentArg = ""
-                
             }
-            
-        } else {
-            
-            if currentArg.isEmpty {
-                parsedArgs.append(arg)
-            } else {
-                currentArg.append(" " + arg)
-            }
-            
+            parsedArgs.append(currentArg)
         }
+        
+        args = parsedArgs
     }
     
-    if !currentArg.isEmpty {
-        if currentArg.hasSuffix("'") {
-            currentArg.removeLast()
-        }
-        parsedArgs.append(currentArg)
-    }
-    
-    args = parsedArgs
+    parse(quote: "'")
+    parse(quote: "\"")
 }
 
 /// The shell for executing commands.
@@ -178,8 +203,7 @@ open class LibShell {
         initializeEnvironment()
     }
     
-    /// The commands history.
-    open var history: [String] {
+    private var _shared_history: [String] {
         get {
             return UserDefaults.standard.stringArray(forKey: "history") ?? []
         }
@@ -187,6 +211,27 @@ open class LibShell {
         set {
             UserDefaults.standard.set(newValue, forKey: "history")
             UserDefaults.standard.synchronize()
+        }
+    }
+    
+    private var _shell_history = [String]()
+    
+    /// The commands history.
+    open var history: [String] {
+        get {
+            if #available(iOS 13.0, *) {
+                return _shell_history
+            } else {
+                return _shared_history
+            }
+        }
+        
+        set {
+            if #available(iOS 13.0, *) {
+                _shell_history = newValue
+            } else {
+                _shared_history = newValue
+            }
         }
     }
     
@@ -207,10 +252,13 @@ open class LibShell {
     
     /// Builtin commands per name and functions.
     open var builtins: [String:LTCommand] {
-        var commands = ["clear" : clearMain, "help" : helpMain, "ssh" : sshMain, "sftp" : sshMain, "sh" : libshellMain, "exit" : exitMain, "open" : openMain, "credits" : creditsMain, "pbpaste" : pbpasteMain, "pbcopy" : pbpasteMain]
+        var commands = ["clear" : clearMain, "help" : helpMain, "sh" : libshellMain, "exit" : exitMain, "open" : openMain, "credits" : creditsMain, "jsc": jscMain]
         #if !FRAMEWORK
             commands["package"] = packageMain
             commands["edit"] = editMain
+        #endif
+        #if targetEnvironment(simulator)
+        commands["screenshot"] = screenshotMain
         #endif
         return commands
     }
@@ -218,12 +266,35 @@ open class LibShell {
     /// Writes the prompt to the terminal.
     public func input() {
         DispatchQueue.main.async {
-            self.io?.terminal?.input(prompt: "\(UIDevice.current.name) $ ")
+            if let ps1 = getenv("PS1") {
+                self.io?.terminal?.input(prompt: String(cString: ps1))
+            } else {
+                self.io?.terminal?.input(prompt: "\(UIDevice.current.name) $ ")
+            }
         }
     }
     
     /// Shell's variables.
     open var variables = [String:String]()
+    
+    /// Closes `stdin`.
+    @objc public func sendEOF() {
+        
+        guard let io = io else {
+            return
+        }
+        
+        if #available(iOS 13.0, *) {
+            try? io.inputPipe.fileHandleForWriting.close()
+        } else {
+            io.inputPipe.fileHandleForWriting.closeFile()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now()+0.5) {
+            if let term = io.terminal {
+                self.io = LTIO(terminal: term)
+            }
+        }
+    }
     
     /// Kills the current running command.
     @objc public func killCommand() {
@@ -259,16 +330,7 @@ open class LibShell {
     /// - Returns: The exit code.
     @discardableResult open func run(command: String, appendToHistory: Bool = true) -> Int32 {
         
-        let commands = command.components(separatedBy: ";")
-        if commands.count > 1 {
-            addToHistory(command)
-            var lastResult: Int32!
-            for command in commands {
-                lastResult = run(command: command, appendToHistory: false)
-            }
-            
-            return lastResult
-        }
+        putenv("TERM=xterm-color".cValue)
         
         guard let io = self.io else {
             return 1
@@ -286,13 +348,24 @@ open class LibShell {
         io.stdin = fdopen(io.inputPipe.fileHandleForReading.fileDescriptor, "r")
         ios_switchSession(io.stdout)
         
+        DispatchQueue.main.async {
+            io.terminal?.updateSize()
+        }
+        
         isCommandRunning = true
         
         defer {
             isCommandRunning = false
         }
         
-        let command_ = commandByReplacingVariables(command)
+        var command_ = commandByReplacingVariables(command)
+        if command_.split(separator: " ").first == "clang" {
+            command_ = command_.replacingFirstOccurrence(of: "clang", with: "clang -fcolor-diagnostics")
+        }
+        
+        if command_.split(separator: " ").first == "python3" {
+            command_ = command_.replacingFirstOccurrence(of: "python3", with: "python")
+        }
         
         var arguments = command_.arguments
         parseArgs(&arguments)
@@ -306,8 +379,8 @@ open class LibShell {
             return repl
         } else if let variableSet = setVariablesIfNeeded(command: command_) {
             return variableSet
-        } else if let ranPythonModule = tryToRunPythonModule(arguments: &arguments) {
-            return ranPythonModule
+        } else if let ranScript = tryToRunScript(arguments: &arguments) {
+            return ranScript
         } else if builtins.keys.contains(arguments[0]) {
             isBuiltinRunning = true
             defer {
@@ -316,7 +389,11 @@ open class LibShell {
             return builtins[arguments[0]]?(arguments.count, arguments, io) ?? 1
         }
         
-        return ios_system(command_.cValue)
+        let retValue = ios_system(command_.cValue)
+        
+        variables["?"] = "\(retValue)"
+        
+        return retValue
     }
     
     private func addToHistory(_ command: String) {
@@ -342,20 +419,20 @@ open class LibShell {
     }
     
     private func setStreams(arguments: [String], io: LTIO) {
-        if arguments.first == "python" || arguments.first == "python2" || arguments.first == "lua" || arguments.first == "bc" || arguments.first == "dc" { // Redirect stderr to stdout and reset input
+        if arguments.first == "python" || arguments.first == "python3" || arguments.first == "python2" || arguments.first == "lua" || arguments.first == "bc" || arguments.first == "dc" { // Redirect stderr to stdout and reset input
             
             io.inputPipe = Pipe()
             io.stdin = fdopen(io.inputPipe.fileHandleForReading.fileDescriptor, "r")
             
             let _stdin = io.stdin
             
-            ios_setStreams(io.stdin, io.stdout, io.stdout)
-            
-            stdin = io.stdin ?? stdin
-            
             defer {
                 stdin = _stdin ?? stdin
             }
+            
+            ios_setStreams(io.stdin, io.stdout, io.stdout)
+            
+            stdin = io.stdin ?? stdin
         } else {
             ios_setStreams(io.stdin, io.stdout, io.stderr)
         }
@@ -416,13 +493,13 @@ open class LibShell {
         if version == .v2_7 {
             putenv("PYTHONPATH=\(py2SitePackages):\(py2Path):\(bundledSitePackages)".cValue)
         } else if version == .v3_7 {
-            putenv("PYTHONPATH=\(py3SitePackages):\(py3Path):\(bundledSitePackages3):".cValue)
+            putenv("PYTHONPATH=\(py3SitePackages):\(py3Path):\(bundledSitePackages):\(bundledSitePackages3)".cValue)
         }
     }
     
     private func setupPython(arguments: [String]) -> Int32? {
         // When Python is called without arguments, it freezes instead of running the REPL
-        if arguments.first == "python" {
+        if arguments.first == "python" || arguments.first == "python3" {
             setPythonEnvironment(version: .v3_7)
             if arguments == ["python"] {
                 return ios_system("python \(runREPL)")
@@ -436,18 +513,39 @@ open class LibShell {
         return nil
     }
     
-    private func tryToRunPythonModule(arguments: inout [String]) -> Int32? {
-        // Run Python scripts located in ~/Library/scripts
-        let scriptsDirectory = FileManager.default.urls(for: .libraryDirectory, in: .allDomainsMask)[0].appendingPathComponent("scripts")
+    private func tryToRunScript(arguments: inout [String]) -> Int32? {
+        // Run Python scripts located in ~/Library/bin
+        let scriptsDirectory = FileManager.default.urls(for: .libraryDirectory, in: .allDomainsMask)[0].appendingPathComponent("bin")
+        
+        let url: URL
+        let command: String
+        
+        let llURL = scriptsDirectory.appendingPathComponent(arguments[0]+".ll")
+        let bcURL = scriptsDirectory.appendingPathComponent(arguments[0]+".bc")
+        let binURL = scriptsDirectory.appendingPathComponent(arguments[0])
         let scriptURL = scriptsDirectory.appendingPathComponent(arguments[0]+".py")
-        if FileManager.default.fileExists(atPath: scriptURL.path) {
-            arguments.insert("python", at: 0)
-            arguments.remove(at: 1)
-            arguments.insert(scriptURL.path, at: 1)
-            
+        
+        if FileManager.default.fileExists(atPath: binURL.path) {
+            url = binURL
+            command = "lli"
+        } else if FileManager.default.fileExists(atPath: llURL.path) {
+            url = llURL
+            command = "lli"
+        } else if FileManager.default.fileExists(atPath: bcURL.path) {
+            url = bcURL
+            command = "lli"
+        } else {
+            url = scriptURL
+            command = "python"
             setPythonEnvironment(version: .v3_7)
+        }
+        
+        if FileManager.default.fileExists(atPath: url.path) {
+            arguments.insert(command, at: 0)
+            arguments.remove(at: 1)
+            arguments.insert(url.path, at: 1)
             
-            return ios_system(arguments.joined(separator: " ").cValue)
+            return run(command: arguments.joined(separator: " "), appendToHistory: false)
         } else {
             return nil
         }

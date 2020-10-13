@@ -6,34 +6,62 @@ BOLDgithub.com/ColdGrub1384/LibTermPLAIN
 
 A big thanks to Nicolas Holzschuch (github.com/holzschu) for making this project possible by compiling commands.
 
-Contributors:
+Contributors (3rd party packages):
 
 BOLDShock9616PLAIN (github.com/Shock9616)
 BOLDG3bEPLAIN (github.com/G3bE)
 BOLDDawidPLAIN (github.com/CodeIndexer)
 BOLDcr4ck32PLAIN (github.com/cr4ck32)
+BOLDdullbananasPLAIN (github.com/dullbananas)
+BOLDNot-NikPLAIN (github.com/Not-Nik)
+BOLDandreaponzaPLAIN (github.com/andreaponza)
+BOLDonyxwarePLAIN (github.com/onyxware)
+BOLDIndexerrowatyPLAIN (github.com/Indexerrowaty)
+BOLDLightWelds1992PLAIN (github.com/LightWelds1992)
 
 Third party libraries used on this project:
 
   - BOLDios_systemPLAIN by Nicolas Holzschuch:
     Licensed under BSD 3-Clause License
 
-  - BOLDPython3_ios by Nicolas Holzschuch
+    Copyright (c) 2018, Nicolas Holzschuch
+    All rights reserved.
+    
+  - BOLDllvmPLAIN forked by Nicolas Holzschuch:
+    Licensed under LLVM Release License
+    
+    Copyright (c) 2003-2017 University of Illinois at Urbana-Champaign.
+    All rights reserved.
+
+  - BOLDPython3_ios by Nicolas Holzschuch:
+
+    Copyright (c) 2019, Nicolas Holzschuch
+    All rights reserved.
 
   - BOLDPython Apple SupportPLAIN by BeeWare:
     Licensed under MIT license
 
+    Copyright (c) 2014-2017 Russell Keith-Magee.
+
   - BOLDTabViewPLAIN by Ian McDowell:
     Licensed under MIT license
+
+    Copyright (c) 2017 Ian McDowell
 
   - BOLDInputAssistantPLAIN by Ian McDowell:
     Licensed under MIT license
 
+    Copyright (c) 2017 Ian McDowell
+
   - BOLDHighlightrPLAIN by J.P. Illanes:
     Licensed under MIT license
 
+    Copyright (c) 2016 Illanes, Juan Pablo <jpillaness+highlightr@gmail.com>
+
   - BOLDObjectUserDefaultsPLAIN by Adrian Labbé:
     Licensed under MIT license
+
+    Copyright (c) 2018 Adrian Labbé
 
 Commands:
 

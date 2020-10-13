@@ -38,7 +38,7 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
         }
         
         /// Terminal's keyboard appearance.
-        public var keyboardAppearance = UIKeyboardAppearance.dark
+        public var keyboardAppearance: UIKeyboardAppearance = .default
         
         /// Terminal's foreground color.
         public var foregroundColor: UIColor {
@@ -46,10 +46,10 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
                 foregroundColor_ = newValue
             }
             get {
-                if #available(iOS 11.0, *) {
-                    return foregroundColor_ ?? UIColor(named: "Foreground Color", in: Bundle(for: LTTerminalViewController.self), compatibleWith: nil)!
+                if #available(iOS 13.0, *) {
+                    return foregroundColor_ ?? (SettingsTableViewController.greenText.boolValue ? UIColor(named: "Green")! : UIColor.label)
                 } else {
-                    return foregroundColor_ ?? .green
+                    return foregroundColor_ ?? (SettingsTableViewController.greenText.boolValue ? UIColor(named: "Green")! : UIColor.black)
                 }
             }
         }
@@ -164,7 +164,7 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
     public var thread = DispatchQueue.global(qos: .userInteractive)
     
     /// The view for autocompletion.
-    let assistant = InputAssistantView()
+    var assistant = InputAssistantView()
     
     /// Asks the user for a command.
     ///
@@ -212,6 +212,9 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
     /// The URL to navigate at View did appear.
     var url: URL?
     
+    /// Set to `true` if the session was restored.
+    var restoredSession = false
+    
     // MARK: - Private values for theming inside Pisth or other apps
     
     private var navigationController_: UINavigationController?
@@ -256,11 +259,46 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
             return Int((viewHeight / charHeight).rounded(.down))
         }
         
-        putenv("COLUMNS=\(columns)".cValue)
-        putenv("ROWS=\(rows)".cValue)
+        setenv("COLUMNS", "\(columns)", 1)
+        setenv("LINES", "\(rows)", 1)
+        
+        kill(getpid(), SIGWINCH)
     }
     
+    private static var unarchivedUsr = false
+    
     // MARK: - View controller
+    
+    public override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        
+        if traitCollection.userInterfaceStyle == .dark {
+            preferences.keyboardAppearance = .dark
+        } else {
+            preferences.keyboardAppearance = .light
+        }
+        
+        let wasFirstResponder = terminalTextView.isFirstResponder
+        
+        if wasFirstResponder {
+            terminalTextView.resignFirstResponder()
+        }
+        
+        terminalTextView.keyboardAppearance = preferences.keyboardAppearance
+        
+        terminalTextView.inputAccessoryView = nil
+        
+        assistant = InputAssistantView()
+        assistant.trailingActions = [InputAssistantAction(image: LTTerminalViewController.downArrow, target: terminalTextView, action: #selector(terminalTextView.resignFirstResponder))]
+        assistant.delegate = self
+        assistant.dataSource = self
+        
+        assistant.attach(to: terminalTextView)
+        
+        if wasFirstResponder {
+            terminalTextView.becomeFirstResponder()
+        }
+    }
     
     override public var title: String? {
         didSet {
@@ -270,9 +308,10 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
             }
             
             bookmarkData = try? URL(fileURLWithPath: FileManager.default.currentDirectoryPath).bookmarkData()
-            #if !FRAMEWORK
-            (UIApplication.shared.keyWindow?.rootViewController as? TerminalTabViewController)?.saveTabs()
-            #endif
+            
+            if #available(iOS 13.0, *) {
+                view.window?.windowScene?.title = title
+            }
         }
     }
     
@@ -280,7 +319,16 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
         super.viewDidLoad()
         
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillShow), name: UIResponder.keyboardWillShowNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillShow(_:)), name:UIResponder.keyboardDidChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(keyboardWillHide), name:UIResponder.keyboardWillHideNotification, object: nil)
+        
+        if traitCollection.userInterfaceStyle == .dark {
+            preferences.keyboardAppearance = .dark
+        } else {
+            preferences.keyboardAppearance = .light
+        }
+        
+        terminalTextView.keyboardAppearance = preferences.keyboardAppearance
         
         view.tintColor = preferences.foregroundColor
         view.backgroundColor = preferences.backgroundColor
@@ -304,9 +352,20 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
             }
         }
         
-        _ = helpMain(argc: 2, argv: ["help", "--startup"], io: shell.io!)
+        if restoredSession {
+            terminalTextView.attributedText = attributedConsole
+            _ = helpMain(argc: 2, argv: ["help", "--restored"], io: shell.io!)
+        } else {
+            _ = helpMain(argc: 2, argv: ["help", "--startup"], io: shell.io!)
+        }
         
-        _ = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false, block: { (_) in
+        if FileManager.default.fileExists(atPath: FileManager.default.urls(for: .documentDirectory, in: .allDomainsMask)[0].appendingPathComponent(".shrc").path) {
+            _ = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false, block: { (_) in
+                self.shell.run(command: "sh ~/Documents/.shrc")
+            })
+        }
+        
+        _ = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false, block: { (_) in
             self.shell.input()
         })
         
@@ -334,8 +393,7 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
         navigationController?.setNeedsStatusBarAppearanceUpdate()
         
         terminalTextView.isEditable = true
-        terminalTextView.resignFirstResponder()
-        _ = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false, block: { (_) in
+        _ = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: false, block: { (_) in
             self.terminalTextView.becomeFirstResponder()
         })
     }
@@ -351,12 +409,38 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
     override public func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         
-        terminalTextView.becomeFirstResponder()
+        #if targetEnvironment(simulator)
+        assistant.attach(to: terminalTextView)
+        #else
+        if SettingsTableViewController.shouldHideSuggestionsBar.boolValue {
+            terminalTextView.inputAccessoryView = nil
+        } else {
+            assistant.attach(to: terminalTextView)
+        }
+        #endif
+        terminalTextView.reloadInputViews()
+        
+        (UIApplication.shared.delegate as? AppDelegate)?.movePrograms()
     }
     
     override public func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         updateSize()
+    }
+    
+    public override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        
+        let wasFirstResponder = terminalTextView.isFirstResponder
+        if wasFirstResponder {
+            terminalTextView.resignFirstResponder()
+        }
+        
+        coordinator.animate(alongsideTransition: nil) { (_) in
+            if wasFirstResponder {
+                self.terminalTextView.becomeFirstResponder()
+            }
+        }
     }
     
     // MARK: - Keyboard
@@ -388,33 +472,45 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
         isWrittingToStdin = false
     }
     
+    public func textViewDidBeginEditing(_ textView: UITextView) {
+        (UIApplication.shared.delegate as? AppDelegate)?.movePrograms()
+    }
+    
     public func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
-        
-        let location:Int = textView.offset(from: textView.beginningOfDocument, to: textView.endOfDocument)
-        let length:Int = textView.offset(from: textView.endOfDocument, to: textView.endOfDocument)
-        let end =  NSMakeRange(location, length)
-        
-        if end != range && !(text == "" && range.length == 1 && range.location+1 == end.location) {
-            // Only allow inserting text from the end
-            return false
-        }
-        
-        if (textView.text as NSString).replacingCharacters(in: range, with: text).count >= attributedConsole.string.count {
-            
-            isWrittingToStdin = !isAskingForInput
-            
-            self.prompt += text
-            
-            if text == "\n" {
                 
-                if !isAskingForInput, let data = self.prompt.data(using: .utf8) {
-                    tprint("\n")
-                    shell.io?.inputPipe.fileHandleForWriting.write(data)
-                    self.prompt = ""
-                    return false
+        if !isAskingForInput {
+            let location: Int = textView.offset(from: textView.beginningOfDocument, to: textView.endOfDocument)
+            let length: Int = textView.offset(from: textView.endOfDocument, to: textView.endOfDocument)
+            let end = NSMakeRange(location, length)
+            
+            if end != range && !(text == "" && range.length == 1 && range.location+1 == end.location) {
+                // Only allow inserting text from the end
+                return false
+            }
+            
+            if (textView.text as NSString).replacingCharacters(in: range, with: text).count >= attributedConsole.string.count {
+                
+                isWrittingToStdin = !isAskingForInput
+                
+                self.prompt += text
+                
+                if text == "\n" {
+                    
+                    if let data = self.prompt.data(using: .utf8) {
+                        tprint("\n")
+                        shell.io?.inputPipe.fileHandleForWriting.write(data)
+                        self.prompt = ""
+                        return false
+                    }
+                } else if text == "" && range.length == 1 {
+                    prompt = String(prompt.dropLast())
                 }
                 
-                self.prompt = String(self.prompt.dropLast())
+                return true
+            }
+        } else if let consoleRange = textView.text.range(of: attributedConsole.string) {
+            
+            if text == "\n" {
                 tprint("\n")
                 textViewDidChange(textView)
                 isAskingForInput = false
@@ -423,22 +519,37 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
                 let prompt = self.prompt
                 self.prompt = ""
                 
-                defer {
-                    thread = DispatchQueue.global(qos: .utility)
-                    thread.async {
-                        self.shell.run(command: prompt)
-                        DispatchQueue.main.asyncAfter(deadline: .now()+0.25, execute: {
-                            self.shell.input()
-                            self.thread.async(execute: Thread.current.cancel)
-                        })
+                self.thread = DispatchQueue.global(qos: .utility)
+                self.thread.async {
+                    self.shell.run(command: prompt)
+                    
+                    while (self.shell.io?.parserQueue ?? 0) > 0 {
+                        sleep(UInt32(0.2))
+                    }
+                    
+                    self.thread.asyncAfter(deadline: .now()+0.2) {
+                        self.shell.input()
                     }
                 }
                 
                 return false
-            } else if text == "" && range.length == 1 {
-                prompt = String(prompt.dropLast())
+            } else {
+                
+                if text == "" && range.length == 1 && self.prompt.isEmpty { // Delete not allowed
+                    return false
+                }
+                
+                if range.location < (attributedConsole.string as NSString).length {
+                    return false
+                }
+                
+                var prompt = textView.text ?? ""
+                prompt = (prompt as NSString).replacingCharacters(in: range, with: text)
+                prompt.replaceSubrange(consoleRange, with: "")
+                
+                self.prompt = prompt
             }
-            
+                        
             return true
         }
         
@@ -455,7 +566,11 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
             path.addLine(to: CGPoint(x: 11, y: 17))
             path.addLine(to: CGPoint(x: 22, y: 7))
             
-            UIColor.white.setStroke()
+            if #available(iOS 13.0, *) {
+                UIColor.label.setStroke()
+            } else {
+                UIColor.black.setStroke()
+            }
             path.lineWidth = 2
             path.stroke()
             
@@ -479,7 +594,7 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
             return .running
         }
         
-        if let command = currentCommand, prompt.hasSuffix(" ") {
+        if let command = currentCommand {
             return command.commandInput
         } else if prompt.isEmpty {
             return .history
@@ -494,7 +609,7 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
             if shell.isBuiltinRunning {
                 return []
             } else {
-                return ["Stop"]
+                return ["Stop", "EOF"]
             }
         }
         
@@ -505,7 +620,7 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
             } else if completionType == .file, var files = try? FileManager.default.contentsOfDirectory(atPath: FileManager.default.currentDirectoryPath) {
                 for item in files.enumerated() {
                     files.remove(at: item.offset)
-                    files.insert("'\(item.element)'", at: item.offset)
+                    files.insert("\(item.element.replacingOccurrences(of: " ", with: "\\ ").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "'", with: "\\\'"))", at: item.offset)
                 }
                 return [".", "../"]+files+flags
             } else if completionType == .directory, let files = try? FileManager.default.contentsOfDirectory(atPath: FileManager.default.currentDirectoryPath) {
@@ -513,7 +628,7 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
                 for file in files {
                     var isDir: ObjCBool = false
                     if FileManager.default.fileExists(atPath: file, isDirectory: &isDir) && isDir.boolValue {
-                        dirs.append("'\(file)'")
+                        dirs.append("\(file.replacingOccurrences(of: " ", with: "\\ ").replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "'", with: "\\\'"))")
                     }
                 }
                 return dirs+flags
@@ -528,8 +643,8 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
             } else {
                 var commands_ = shell.history.reversed() as [String]
                 var help = LTHelp
-                for file in (try? FileManager.default.contentsOfDirectory(atPath: FileManager.default.urls(for: .libraryDirectory, in: .allDomainsMask)[0].appendingPathComponent("scripts").path)) ?? [] {
-                    if file.lowercased().hasSuffix(".py") {
+                for file in (try? FileManager.default.contentsOfDirectory(atPath: FileManager.default.urls(for: .libraryDirectory, in: .allDomainsMask)[0].appendingPathComponent("bin").path)) ?? [] {
+                    if file.lowercased().hasSuffix(".py") || file.lowercased().hasSuffix(".ll") || file.lowercased().hasSuffix(".bc") {
                         help.append(LTCommandHelp(commandName: (file as NSString).deletingPathExtension, commandInput: .none))
                     }
                 }
@@ -553,7 +668,7 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
 
         var suggestions_ = [String]()
         for suggestion in suggestions {
-            if !suggestions_.contains(suggestion) {
+            if !suggestions_.contains(suggestion) && suggestion.hasPrefix(prompt.components(separatedBy: " ").last ?? "") {
                 suggestions_.append(suggestion)
             }
         }
@@ -578,12 +693,17 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
     
     public func inputAssistantView(_ inputAssistantView: InputAssistantView, didSelectSuggestionAtIndex index: Int) {
         
+        let text = (commands_[index]+" ").replacingFirstOccurrence(of: prompt.components(separatedBy: " ").last ?? "", with: "")
+        
         if completionType == .running {
-            return shell.killCommand()
-        } else if completionType != .command && completionType != .history {
-            prompt += commands_[index]+" "
+            if index == 0 {
+                tprint("\u{003}\n")
+                return shell.killCommand()
+            } else if index == 1 {
+                return shell.sendEOF()
+            }
         } else {
-            prompt = commands_[index]+" "
+            prompt += text
         }
         terminalTextView.attributedText = attributedConsole
         tprint(prompt)
@@ -628,7 +748,8 @@ public class LTTerminalViewController: UIViewController, UITextViewDelegate, Inp
         }
         
         if urls[0].startAccessingSecurityScopedResource() {
-            ios_system("cd '\(urls[0].path)'")
+            ios_switchSession(shell.io?.stdout)
+            ios_setDirectoryURL(urls[0])
             title = urls[0].lastPathComponent
         } else {
             tprint("Error opening \(urls[0].lastPathComponent).\n")

@@ -1,18 +1,21 @@
 [submodule "InputAssistant"]
 	path = InputAssistant
 	url = https://github.com/IMcD23/InputAssistant.git
-[submodule "TabView"]
-	path = TabView
-	url = https://github.com/IMcD23/TabView.git
 [submodule "ios_system_core"]
 	path = ios_system_core
 	url = https://github.com/ColdGrub1384/ios_system
 [submodule "Highlightr"]
 	path = Highlightr
-	url = https://github.com/raspu/Highlightr.git
+	url = https://github.com/ColdGrub1384/Highlightr.git
 [submodule "ObjectUserDefaults"]
 	path = ObjectUserDefaults
 	url = https://github.com/ColdGrub1384/ObjectUserDefaults.git
 [submodule "bc"]
 	path = bc
 	url = https://github.com/holzschu/bc.git
+[submodule "TabView"]
+	path = TabView
+	url = https://github.com/ColdGrub1384/TabView.git
+[submodule "ZipArchive"]
+	path = ZipArchive
+	url = https://github.com/ZipArchive/ZipArchive.git

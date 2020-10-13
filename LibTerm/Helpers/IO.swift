@@ -15,7 +15,7 @@ public extension FileHandle {
     ///
     /// - Parameters:
     ///     - str: Text to print.
-    public func write(_ str: String) {
+    func write(_ str: String) {
         if let data = str.data(using: .utf8) {
             write(data)
         }
@@ -24,7 +24,10 @@ public extension FileHandle {
 
 /// A class for managing input and output.
 public class LTIO: ParserDelegate {
-        
+    
+    /// The number of operations the parser is performing.
+    public var parserQueue = 0
+    
     /// Initialize for writting to the given terminal.
     ///
     /// - Parameters:
@@ -32,21 +35,35 @@ public class LTIO: ParserDelegate {
     public init(terminal: LTTerminalViewController) {
                 
         self.terminal = terminal
+        
         stdout = fdopen(outputPipe.fileHandleForWriting.fileDescriptor, "w")
         stderr = fdopen(errorPipe.fileHandleForWriting.fileDescriptor, "w")
         stdin = fdopen(inputPipe.fileHandleForReading.fileDescriptor, "r")
         outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            self.parserQueue += 1
             self.outputParser.delegate = self
             self.outputParser.parse(handle.availableData)
         }
         errorPipe.fileHandleForReading.readabilityHandler = { handle in
-            if let progname = ios_progname(), String(cString: progname) == "python" || String(cString: progname) == "bc" {
-                self.outputPipe.fileHandleForReading.readabilityHandler?(handle)
+            
+            let data = handle.availableData
+            if var str = String(data: data, encoding: .utf8), !str.isEmpty {
+                str.removeLast()
+                guard !str.hasPrefix("Freeing unary") && !str.hasPrefix("Freeing leaf") && !str.hasPrefix("Freeing tree") && str.components(separatedBy: " ").last?.count != 8 else {
+                    return
+                }
+            }
+            
+            self.parserQueue += 1
+            if let progname = ios_progname(), String(cString: progname) == "python" || String(cString: progname) == "bc" || String(cString: progname) == "clang" {
+                self.outputParser.delegate = self
+                self.outputParser.parse(data)
             } else {
                 self.errorParser.delegate = self
-                self.errorParser.parse(handle.availableData)
+                self.errorParser.parse(data)
             }
         }
+        
         setbuf(stdout!, nil)
         setbuf(stderr!, nil)
     }
@@ -107,6 +124,8 @@ public class LTIO: ParserDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now()+0.5, execute: {
                 term.terminalTextView.scrollToBottom()
             })
+            
+            self.parserQueue -= 1
         }
     }
     
